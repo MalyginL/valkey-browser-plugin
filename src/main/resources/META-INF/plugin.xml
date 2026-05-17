@@ -1,7 +1,6 @@
 <idea-plugin>
     <id>tid.valkey</id>
     <name>Valkey Browser</name>
-    <icon>/icons/valkey.svg</icon>
     <vendor>l.malygin</vendor>
     <resource-bundle>messages.ValkeyBundle</resource-bundle>
 
@@ -23,8 +22,6 @@
     <depends>com.intellij.modules.platform</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow anchor="right" factoryClass="tid.valkey.toolWindow.MyToolWindowFactory" id="Valkey Browser" icon="tid.valkey.icons.ValkeyIcons.TOOL_WINDOW"/>
-        <projectService serviceImplementation="tid.valkey.valkey.ValkeyService"/>
-        <projectService serviceImplementation="tid.valkey.valkey.ValkeySettings"/>
+        <toolWindow anchor="right" factoryClass="tid.valkey.toolWindow.WindowFactory" id="Valkey Browser" icon="tid.valkey.icons.ValkeyIcons.TOOL_WINDOW"/>
     </extensions>
 </idea-plugin>
