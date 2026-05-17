@@ -1,0 +1,30 @@
+<idea-plugin>
+    <id>tid.valkey</id>
+    <name>Valkey Browser</name>
+    <icon>/icons/valkey.svg</icon>
+    <vendor>l.malygin</vendor>
+    <resource-bundle>messages.ValkeyBundle</resource-bundle>
+
+    <description><![CDATA[
+        Browse Valkey/Redis keys and values directly from IntelliJ IDEA.
+
+        Features:
+        <ul>
+            <li>Browse all keys via SCAN cursor</li>
+            <li>View values of all data types (string, list, hash, set, sorted set, stream)</li>
+            <li>SSL/TLS connection support</li>
+            <li>Username+password authentication (Redis 6+)</li>
+            <li>Multiple saved connection profiles</li>
+            <li>Connection timeout configuration</li>
+            <li>DB index selector</li>
+        </ul>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow anchor="right" factoryClass="tid.valkey.toolWindow.MyToolWindowFactory" id="Valkey Browser" icon="tid.valkey.icons.ValkeyIcons.TOOL_WINDOW"/>
+        <projectService serviceImplementation="tid.valkey.valkey.ValkeyService"/>
+        <projectService serviceImplementation="tid.valkey.valkey.ValkeySettings"/>
+    </extensions>
+</idea-plugin>
