@@ -2,7 +2,6 @@ package tid.valkey.valkey
 
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.thisLogger
-import com.intellij.openapi.project.Project
 import redis.clients.jedis.Jedis
 import redis.clients.jedis.params.ScanParams
 import java.net.URI
@@ -12,7 +11,7 @@ import java.util.concurrent.locks.ReentrantLock
  * Manages connection to Valkey/Redis and provides read-only operations.
  */
 @Service(Service.Level.PROJECT)
-class ValkeyService(private val project: Project) {
+class ValkeyService {
 
     private var jedis: Jedis? = null
     private val lock = ReentrantLock()
@@ -37,7 +36,7 @@ class ValkeyService(private val project: Project) {
                 connection.host,
                 connection.port,
                 "/${connection.db}",
-                "timeout=${connection.connectTimeout}",
+                "timeout=${connection.connectTimeout}&socket.timeout=${connection.socketTimeout}",
                 null
             )
             val client = Jedis(uri)
@@ -95,14 +94,6 @@ class ValkeyService(private val project: Project) {
 
             return keys.sorted()
         } finally { lock.unlock() }
-    }
-
-   /**
-     * Sets a string value for a key.
-     */
-    fun setString(key: String, value: String): String {
-        lock.lock()
-        try { return checkConnected().set(key, value) } finally { lock.unlock() }
     }
 
     /**
@@ -227,9 +218,5 @@ class ValkeyService(private val project: Project) {
 
     private fun checkConnected(): Jedis {
         return jedis ?: throw IllegalStateException("Not connected to Valkey")
-    }
-
-    fun dispose() {
-        disconnect()
     }
 }

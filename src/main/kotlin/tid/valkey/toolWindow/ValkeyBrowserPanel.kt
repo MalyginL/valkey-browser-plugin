@@ -4,6 +4,7 @@ import com.intellij.openapi.application.invokeLater
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
+import com.intellij.ui.JBColor
 import com.intellij.util.ui.UIUtil
 import com.intellij.ui.components.JBLabel
 import javax.swing.UIManager
@@ -17,9 +18,10 @@ import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.labels.LinkLabel
 import com.intellij.ui.dsl.builder.Panel
 import com.intellij.ui.dsl.builder.panel
+import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.JBUI.insetsBottom
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import tid.valkey.valkey.SavedConnectionConfig
@@ -42,17 +44,14 @@ import javax.swing.JTextArea
 import javax.swing.ListCellRenderer
 import javax.swing.ListSelectionModel
 import javax.swing.border.CompoundBorder
-import javax.swing.border.EmptyBorder
 import javax.swing.border.LineBorder
 import javax.swing.border.TitledBorder
 import javax.swing.event.ListSelectionEvent
 import javax.swing.event.ListSelectionListener
-import java.awt.Shape
 import java.awt.geom.Ellipse2D
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.RenderingHints
-import java.awt.Insets
 import java.awt.event.MouseAdapter
 import java.awt.event.KeyEvent
 import java.awt.Dimension
@@ -78,10 +77,8 @@ class RoundPanel(private val radius: Int) : JBPanel<Nothing>() {
         val g2 = g as Graphics2D
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
         g2.color = background
-        g2.fill(Oval(0, 0, radius * 2, radius * 2))
+        g2.fill(Ellipse2D.Double(0.0, 0.0, (radius * 2).toDouble(), (radius * 2).toDouble()))
     }
-
-    private fun Oval(x: Int, y: Int, w: Int, h: Int): Shape = Ellipse2D.Double(x.toDouble(), y.toDouble(), w.toDouble(), h.toDouble())
 }
 
 /**
@@ -105,9 +102,9 @@ class ValkeyBrowserPanel(
        private fun mutedForeground() = UIUtil.getInactiveTextColor()
         private fun smallFont() = UIManager.getFont("Label.font") ?: JBLabel().font
         private fun fixedFont() = UIManager.getFont("TextField.font") ?: JTextArea().font
-        private fun accentColor(): java.awt.Color = UIManager.getColor("Link.activeForeground") ?: java.awt.Color(52, 152, 219)
-        private fun successColor() = java.awt.Color(54, 162, 93)
-        private fun warningColor() = java.awt.Color(255, 165, 0)
+        private fun accentColor(): java.awt.Color = UIManager.getColor("Link.activeForeground") ?: JBColor(0x3498DB, 0x3498DB)
+        private fun successColor() = JBColor.GREEN
+        private fun warningColor() = JBColor.ORANGE
 
         /** Blend fg over bg with given alpha (0..1). */
         private fun blend(fg: java.awt.Color, bg: java.awt.Color, alpha: Float): java.awt.Color {
@@ -118,7 +115,6 @@ class ValkeyBrowserPanel(
             return java.awt.Color(r, g, b)
         }
 
-        private fun badgeBackground() = blend(UIUtil.getListSelectionBackground(), UIUtil.getPanelBackground(), 0.15f)
         private fun toolbarHoverBackground() = blend(UIUtil.getListSelectionBackground(), UIUtil.getPanelBackground(), 0.08f)
 
         /** Style a text field to look like a placeholder hint (italic + muted). */
@@ -154,12 +150,22 @@ class ValkeyBrowserPanel(
                     val c = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
                     (c as? javax.swing.JLabel)?.font = c.font?.deriveFont(Font.ITALIC)
                     if (c is javax.swing.JComponent) {
-                        c.border = EmptyBorder(0, 8, 0, 0)
+                        c.border = JBUI.Borders.emptyLeft(8)
                     }
                     return c
                 }
             }
         }
+
+    // Connection list selection listener (registered once in init)
+    private val connectionSelectionListener: ListSelectionListener = ListSelectionListener { e ->
+        if (e?.valueIsAdjusting == true) return@ListSelectionListener
+        val selectedName = connectionList.selectedValue ?: return@ListSelectionListener
+        val config = settings.savedConnections.find { it.name == selectedName }
+        if (config != null) {
+            populateFormFromConfig(config)
+        }
+    }
 
     // Connection form fields
     private lateinit var hostField: JBTextField
@@ -170,8 +176,6 @@ class ValkeyBrowserPanel(
     private lateinit var sslButton: JBCheckBox
     private lateinit var usernameField: JBTextField
     private lateinit var passwordField: javax.swing.JPasswordField
-    private lateinit var connectTimeoutField: JBTextField
-    private lateinit var socketTimeoutField: JBTextField
 
     // Key list — stores KeyWithTTL, renders with TTL
     private val keyListModel = DefaultListModel<KeyWithTTL>()
@@ -196,7 +200,7 @@ class ValkeyBrowserPanel(
         background = panelBackground()
         border = CompoundBorder(
             LineBorder(borderLine(), 1),
-            EmptyBorder(4, 8, 4, 8)
+            JBUI.Borders.empty(4, 8)
         )
     }
 
@@ -216,7 +220,7 @@ class ValkeyBrowserPanel(
             isContentAreaFilled = false
             cursor = java.awt.Cursor(java.awt.Cursor.HAND_CURSOR)
             font = smallFont()
-            margin = Insets(4, 8, 4, 8)
+            margin = JBUI.insets(4, 8)
             addActionListener { action() }
 
             // Theme-aware hover effect
@@ -282,7 +286,7 @@ class ValkeyBrowserPanel(
 
    // Health indicator (circular dot + label)
     private val healthDot = RoundPanel(7).apply {
-        border = EmptyBorder(0, 0, 0, 6)
+        border = JBUI.Borders.emptyRight(6)
         background = mutedForeground()
     }
     private val healthLabel = JBLabel(message("valkey.browser.status.disconnected")).apply {
@@ -292,7 +296,7 @@ class ValkeyBrowserPanel(
 
     init {
         layout = java.awt.BorderLayout()
-        border = EmptyBorder(8, 8, 8, 8)
+        border = JBUI.Borders.empty(8)
         isOpaque = true
         background = panelBackground()
 
@@ -309,17 +313,6 @@ class ValkeyBrowserPanel(
                 panelForeground()
             )
             add(panel { connectionForm() }.apply {
-                isOpaque = true
-                background = panelBackground()
-            }, java.awt.BorderLayout.CENTER)
-        }
-
-        // Loading indicator row
-        val loadingRow = JBPanel<Nothing>(java.awt.BorderLayout()).apply {
-            isOpaque = true
-            background = panelBackground()
-            add(loadingIndicator, java.awt.BorderLayout.WEST)
-            add(JBPanel<Nothing>().apply {
                 isOpaque = true
                 background = panelBackground()
             }, java.awt.BorderLayout.CENTER)
@@ -342,7 +335,7 @@ class ValkeyBrowserPanel(
             val body = JBPanel<Nothing>(java.awt.BorderLayout()).apply {
                 isOpaque = true
                 background = panelBackground()
-                border = EmptyBorder(4, 8, 4, 8)
+                border = JBUI.Borders.empty(4, 8)
 
                 // Toolbar: pattern row + limit/scan row
                 val toolbar = JBPanel<Nothing>(java.awt.BorderLayout()).apply {
@@ -352,24 +345,24 @@ class ValkeyBrowserPanel(
                     // Top: pattern field
                     val patternRow = JBPanel<Nothing>(java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 6, 4)).apply {
                         isOpaque = false
-                        add(JBLabel("Scan Pattern (glob)").apply {
+                        add(JBLabel(message("valkey.browser.label.scan.pattern")).apply {
                             font = smallFont()
                             foreground = panelForeground()
                         })
-                        add(patternField.apply { columns = 20; toolTipText = "Glob pattern (e.g. *, user:*)" })
+                        add(patternField.apply { columns = 20; toolTipText = message("valkey.browser.label.scan.pattern.tooltip") })
                     }
                     add(patternRow, java.awt.BorderLayout.NORTH)
 
                     // Bottom: limit + Scan + Delete + loading
                     val btnRow = JBPanel<Nothing>(java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 4)).apply {
                         isOpaque = false
-                        add(JBLabel("Limit:").apply {
+                        add(JBLabel(message("valkey.browser.label.limit")).apply {
                             font = smallFont().deriveFont(Font.ITALIC)
                             foreground = mutedForeground()
                         })
                         add(limitField.apply {
                             columns = 5
-                            toolTipText = "Keys per SCAN batch"
+                            toolTipText = message("valkey.browser.label.limit.tooltip")
                             font = smallFont().deriveFont(Font.ITALIC)
                             foreground = mutedForeground()
                         })
@@ -390,7 +383,7 @@ class ValkeyBrowserPanel(
                         background = panelBackground()
                         viewport.isOpaque = true
                         viewport.background = panelBackground()
-                        border = EmptyBorder(2, 0, 0, 0)
+                        border = JBUI.Borders.emptyTop(2)
                         verticalScrollBar.background = panelBackground()
                         verticalScrollBar.isOpaque = true
                         horizontalScrollBar.background = panelBackground()
@@ -458,7 +451,7 @@ class ValkeyBrowserPanel(
                 background = panelBackground()
                 viewport.isOpaque = true
                 viewport.background = panelBackground()
-                border = EmptyBorder(0, 8, 8, 8)
+                border = JBUI.Borders.empty(0, 8, 8, 8)
                 verticalScrollBar.background = panelBackground()
                 verticalScrollBar.isOpaque = true
                 horizontalScrollBar.background = panelBackground()
@@ -476,7 +469,7 @@ class ValkeyBrowserPanel(
                 gridx = 0; gridy = 0
                 fill = java.awt.GridBagConstraints.HORIZONTAL
                 weightx = 1.0
-                insets = java.awt.Insets(0, 0, 8, 0)
+                insets = insetsBottom(8)
             }
             add(connPanel, connGbc)
 
@@ -501,7 +494,7 @@ class ValkeyBrowserPanel(
                 gridx = 0; gridy = 2
                 fill = java.awt.GridBagConstraints.HORIZONTAL
                 weightx = 1.0
-                insets = java.awt.Insets(4, 0, 4, 0)
+                insets = JBUI.insets(4, 0)
             }
             add(divider, divGbc)
 
@@ -518,6 +511,9 @@ class ValkeyBrowserPanel(
 
         // Load saved connections on init
         loadSavedConnections()
+
+        // Register connection list selection listener once
+        connectionList.addListSelectionListener(connectionSelectionListener)
 
         // Populate form from current saved connection
         populateFormFromSettings()
@@ -550,7 +546,7 @@ class ValkeyBrowserPanel(
             cell(JBPanel<Nothing>(java.awt.BorderLayout()).apply {
                 isOpaque = true
                 background = panelBackground()
-                border = EmptyBorder(4, 0, 4, 0)
+                border = JBUI.Borders.empty(4, 0)
                 add(JBPanel<Nothing>().apply {
                     isOpaque = true
                     background = borderLine()
@@ -564,7 +560,7 @@ class ValkeyBrowserPanel(
         // Host + Port + DB
         row {
             label(message("valkey.browser.label.host"))
-            hostField = textField().component as JBTextField
+            hostField = textField().component
             hostField.text = "localhost"
             hostField.columns = 8
             applyPlaceholderStyle(hostField)
@@ -576,7 +572,7 @@ class ValkeyBrowserPanel(
             })
 
             label(message("valkey.browser.label.port"))
-            portField = textField().component as JBTextField
+            portField = textField().component
             portField.text = "6379"
             portField.columns = 5
             applyPlaceholderStyle(portField)
@@ -594,7 +590,7 @@ class ValkeyBrowserPanel(
         // Username + Password
         row {
             label(message("valkey.browser.label.username"))
-            usernameField = textField().component as JBTextField
+            usernameField = textField().component
             usernameField.text = "default"
             usernameField.columns = 8
             applyPlaceholderStyle(usernameField)
@@ -610,36 +606,9 @@ class ValkeyBrowserPanel(
             passwordField.columns = 10
         }
 
-        // Timeouts
-        row {
-            label(message("valkey.browser.label.connectTimeout"))
-            connectTimeoutField = textField().component as JBTextField
-            connectTimeoutField.text = "5000"
-            connectTimeoutField.columns = 5
-            applyPlaceholderStyle(connectTimeoutField)
-            connectTimeoutField.addFocusListener(object : java.awt.event.FocusAdapter() {
-                override fun focusGained(e: java.awt.event.FocusEvent?) = clearPlaceholderStyle(connectTimeoutField)
-                override fun focusLost(e: java.awt.event.FocusEvent?) {
-                    if (connectTimeoutField.text.isEmpty()) applyPlaceholderStyle(connectTimeoutField)
-                }
-            })
-
-            label(message("valkey.browser.label.socketTimeout"))
-            socketTimeoutField = textField().component as JBTextField
-            socketTimeoutField.text = "5000"
-            socketTimeoutField.columns = 5
-            applyPlaceholderStyle(socketTimeoutField)
-            socketTimeoutField.addFocusListener(object : java.awt.event.FocusAdapter() {
-                override fun focusGained(e: java.awt.event.FocusEvent?) = clearPlaceholderStyle(socketTimeoutField)
-                override fun focusLost(e: java.awt.event.FocusEvent?) {
-                    if (socketTimeoutField.text.isEmpty()) applyPlaceholderStyle(socketTimeoutField)
-                }
-            })
-        }
-
         // SSL + Connect/Disconnect + Health
         row {
-            sslButton = checkBox(message("valkey.browser.checkbox.ssl")).component as JBCheckBox
+            sslButton = checkBox(message("valkey.browser.checkbox.ssl")).component
             cell(actionLink)
             cell(healthDot)
             cell(healthLabel)
@@ -660,16 +629,6 @@ class ValkeyBrowserPanel(
         }
         val idx = settings.lastConnectionIndex.coerceIn(0, connectionListModel.size - 1)
         connectionList.selectedIndex = idx
-
-        // When selection changes, populate form
-        connectionList.addListSelectionListener { e ->
-            if (e.valueIsAdjusting) return@addListSelectionListener
-            val selectedName = connectionList.selectedValue ?: return@addListSelectionListener
-            val config = settings.savedConnections.find { it.name == selectedName }
-            if (config != null) {
-                populateFormFromConfig(config)
-            }
-        }
     }
 
     /**
@@ -682,8 +641,6 @@ class ValkeyBrowserPanel(
         sslButton.isSelected = config.ssl
         usernameField.text = config.username
         passwordField.text = config.password
-        connectTimeoutField.text = config.connectTimeout.toString()
-        socketTimeoutField.text = config.socketTimeout.toString()
     }
 
     /**
@@ -725,14 +682,14 @@ class ValkeyBrowserPanel(
         if (settings.savedConnections.size <= 1) {
             Messages.showErrorDialog(
                 this,
-                "Cannot delete the last connection.",
+                message("valkey.browser.dialog.delete.connection.cannot.last"),
                 message("valkey.browser.dialog.delete.connection.title")
             )
             return
         }
         val ok = Messages.showYesNoDialog(
             this,
-            "Are you sure you want to delete connection \"$selectedName\"?",
+            message("valkey.browser.dialog.delete.connection.confirm", selectedName),
             message("valkey.browser.dialog.delete.connection.title"),
             Messages.getQuestionIcon()
         ) == Messages.YES
@@ -754,9 +711,7 @@ class ValkeyBrowserPanel(
             db = dbField.selectedIndex,
             ssl = sslButton.isSelected,
             username = usernameField.text,
-            password = String(passwordField.password),
-            connectTimeout = connectTimeoutField.text.toIntOrNull() ?: 5000,
-            socketTimeout = socketTimeoutField.text.toIntOrNull() ?: 5000
+            password = String(passwordField.password)
         )
     }
 
@@ -773,9 +728,7 @@ class ValkeyBrowserPanel(
             db = dbField.selectedIndex,
             ssl = sslButton.isSelected,
             username = usernameField.text,
-            password = String(passwordField.password),
-            connectTimeout = connectTimeoutField.text.toIntOrNull() ?: 5000,
-            socketTimeout = socketTimeoutField.text.toIntOrNull() ?: 5000
+            password = String(passwordField.password)
         )
         service.connection = connection
 
@@ -822,7 +775,7 @@ class ValkeyBrowserPanel(
             try {
                 // Verify connection before loading value
                 withContext(Dispatchers.IO) { service.ping() }
-                val (type, rawValue) = withContext(Dispatchers.IO) {
+                val (_, rawValue) = withContext(Dispatchers.IO) {
                     val t = service.getType(selectedKey)
                     t to fetchValueByType(t, selectedKey)
                 }
@@ -897,8 +850,6 @@ class ValkeyBrowserPanel(
         sslButton.isEnabled = false
         usernameField.isEnabled = false
         passwordField.isEnabled = false
-        connectTimeoutField.isEnabled = false
-        socketTimeoutField.isEnabled = false
 
         // Health indicator — green
         healthDot.background = successColor()
@@ -925,8 +876,6 @@ class ValkeyBrowserPanel(
         sslButton.isEnabled = true
         usernameField.isEnabled = true
         passwordField.isEnabled = true
-        connectTimeoutField.isEnabled = true
-        socketTimeoutField.isEnabled = true
 
         // Health indicator — muted
         healthDot.background = mutedForeground()
@@ -943,11 +892,6 @@ class ValkeyBrowserPanel(
         updateToolbarButtons()
     }
 
-    fun dispose() {
-        coroutineScope.cancel()
-    }
-
-    // ── Phase 4 — Key operations ──
 
     /**
      * Scan keys from Valkey using pattern and limit from the toolbar fields.
@@ -956,8 +900,8 @@ class ValkeyBrowserPanel(
         if (!service.isConnected) {
             Messages.showErrorDialog(
                 this,
-                "Not connected to Valkey. Connect first.",
-                "Error"
+                message("valkey.browser.error.not.connected"),
+                message("valkey.browser.error.title")
             )
             return
         }
@@ -974,7 +918,7 @@ class ValkeyBrowserPanel(
                 withContext(Dispatchers.IO) { service.ping() }
 
                 val result = withContext(Dispatchers.IO) {
-                    val loaded = service.scanKeys(pattern, count)
+                    val loaded = service.scanKeys(pattern, count).take(count)
                     // Fetch TTL for each key
                     val withTTL = loaded.map { name ->
                         val ttl = runCatching { service.getTTL(name) }.getOrNull() ?: -1L
@@ -1020,19 +964,19 @@ class ValkeyBrowserPanel(
         if (!service.isConnected) {
             Messages.showErrorDialog(
                 this,
-                "Not connected to Valkey. Connect first.",
-                "Error"
+                message("valkey.browser.error.not.connected"),
+                message("valkey.browser.error.title")
             )
             return
         }
 
         val dialog = JDialog().apply {
-            title = "Create Key"
+            title = message("valkey.browser.dialog.create.key.title")
             isModal = true
             val dialogRef = this
 
             val panel = JBPanel<Nothing>(java.awt.GridBagLayout()).apply {
-                border = EmptyBorder(12, 12, 12, 12)
+                border = JBUI.Borders.empty(12)
                 isOpaque = true
                 background = panelBackground()
 
@@ -1044,7 +988,7 @@ class ValkeyBrowserPanel(
 
                 // Key name
                 gbc.gridy = 0
-                add(JBLabel("Key:"), gbc)
+                add(JBLabel(message("valkey.browser.dialog.create.key.label.key")), gbc)
                 gbc.gridy = 1
                 val keyField = JBTextField()
                 keyField.columns = 25
@@ -1052,17 +996,17 @@ class ValkeyBrowserPanel(
 
                 // Value
                 gbc.gridy = 2
-                add(JBLabel("Value:"), gbc)
+                add(JBLabel(message("valkey.browser.dialog.create.key.label.value")), gbc)
                 gbc.gridy = 3
-                val valueArea = JBTextArea(4, 25)
-                valueArea.lineWrap = true
-                valueArea.wrapStyleWord = true
-                add(JBScrollPane(valueArea), gbc)
+                val dialogValueArea = JBTextArea(4, 25)
+                dialogValueArea.lineWrap = true
+                dialogValueArea.wrapStyleWord = true
+                add(JBScrollPane(dialogValueArea), gbc)
 
                 // TTL
                 gbc.gridy = 4
-                val ttlSecondsField = JBTextField("0").apply { columns = 6; isEnabled = false; toolTipText = "TTL in seconds" }
-                val ttlCheckbox = JBCheckBox("Set TTL (seconds):").apply {
+                val ttlSecondsField = JBTextField("0").apply { columns = 6; isEnabled = false; toolTipText = message("valkey.browser.dialog.create.key.ttl.tooltip") }
+                val ttlCheckbox = JBCheckBox(message("valkey.browser.dialog.create.key.label.ttl")).apply {
                     isSelected = false
                     addActionListener {
                         ttlSecondsField.isEnabled = isSelected
@@ -1081,25 +1025,25 @@ class ValkeyBrowserPanel(
                 gbc.anchor = java.awt.GridBagConstraints.EAST
                 val btnPanel = JBPanel<Nothing>(java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, 6, 4)).apply {
                     isOpaque = false
-                    val okBtn = JButton("OK").apply {
+                    val okBtn = JButton(message("valkey.browser.dialog.create.key.ok")).apply {
                         addActionListener(object : ActionListener {
                             override fun actionPerformed(e: ActionEvent?) {
                                 val key = keyField.text.trim()
-                                val value = valueArea.text
+                                val value = dialogValueArea.text
                                 if (key.isBlank()) {
-                                    Messages.showErrorDialog(dialogRef, "Key name cannot be empty.", "Error")
+                                    Messages.showErrorDialog(dialogRef, message("valkey.browser.dialog.create.key.empty.key"), message("valkey.browser.error.title"))
                                     return
                                 }
                                 val ttlSeconds = if (ttlCheckbox?.isSelected == true) {
                                     try {
                                         val secs = ttlSecondsField.text.trim().toLong()
                                         if (secs <= 0) {
-                                            Messages.showErrorDialog(dialogRef, "TTL must be greater than 0.", "Error")
+                                            Messages.showErrorDialog(dialogRef, message("valkey.browser.dialog.create.key.ttl.positive"), message("valkey.browser.error.title"))
                                             return
                                         }
                                         secs
-                                    } catch (e: NumberFormatException) {
-                                        Messages.showErrorDialog(dialogRef, "Invalid TTL value.", "Error")
+                                    } catch (_: NumberFormatException) {
+                                        Messages.showErrorDialog(dialogRef, message("valkey.browser.dialog.create.key.invalid.ttl"), message("valkey.browser.error.title"))
                                         return
                                     }
                                 } else null
@@ -1113,7 +1057,7 @@ class ValkeyBrowserPanel(
                                             withContext(Dispatchers.IO) { service.setStringWithTTL(key, value, ttlSeconds) }
                                             invokeLater {
                                                 loadingIndicator.isVisible = false
-                                                Messages.showInfoMessage(dialogRef, "Key '$key' created successfully.", "Success")
+                                                Messages.showInfoMessage(dialogRef, message("valkey.browser.dialog.create.key.success", key), "Success")
                                                 loadKeys()
                                             }
                                     } catch (e: Exception) {
@@ -1121,8 +1065,8 @@ class ValkeyBrowserPanel(
                                                     loadingIndicator.isVisible = false
                                                     Messages.showErrorDialog(
                                                         dialogRef,
-                                                        "Failed to create key: ${e.message ?: e.javaClass.simpleName}",
-                                                        "Error"
+                                                        message("valkey.browser.dialog.create.key.error", e.message ?: e.javaClass.simpleName),
+                                                        message("valkey.browser.error.title")
                                                     )
                                                 }
                                             }
@@ -1133,7 +1077,7 @@ class ValkeyBrowserPanel(
                             }
                         })
                 }
-                    val cancelBtn = JButton("Cancel").apply {
+                    val cancelBtn = JButton(message("valkey.browser.dialog.create.key.cancel")).apply {
                         addActionListener { dispose() }
                     }
                     add(okBtn)
@@ -1154,7 +1098,7 @@ class ValkeyBrowserPanel(
      */
     private fun handleDeleteKey() {
         val selected = keyList.selectedValue ?: run {
-            Messages.showInputDialog(this, "No key selected.", message("valkey.browser.error.title"), Messages.getWarningIcon())
+            Messages.showInputDialog(this, message("valkey.browser.dialog.delete.key.no.selection"), message("valkey.browser.error.title"), Messages.getWarningIcon())
             return
         }
         val ok = Messages.showYesNoDialog(
@@ -1241,7 +1185,7 @@ class ValkeyBrowserPanel(
         private val typeDot = JBPanel<Nothing>().apply {
             preferredSize = Dimension(6, 6)
             background = accentColor()
-            border = EmptyBorder(0, 0, 0, 8)
+            border = JBUI.Borders.emptyRight(8)
         }
         private val nameLabel = JBLabel()
         private val ttlLabel = JBLabel().apply {
@@ -1250,7 +1194,7 @@ class ValkeyBrowserPanel(
         }
         private val panel = JBPanel<Nothing>(java.awt.BorderLayout()).apply {
             isOpaque = true
-            border = EmptyBorder(3, 8, 3, 8)
+            border = JBUI.Borders.empty(3, 8)
             // Left: dot + name in a row
             val left = JBPanel<Nothing>(java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 8, 2)).apply {
                 isOpaque = false
