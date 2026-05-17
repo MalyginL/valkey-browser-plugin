@@ -735,32 +735,26 @@ class ValkeyBrowserPanel(
         updateUIForConnecting()
 
         coroutineScope.launch {
-            try {
-                withContext(Dispatchers.IO) {
-                    service.connect()
-                }
-                invokeLater {
-                    updateUIForConnected()
-                    loadKeys()
-                }
-            } catch (e: JedisConnectionException) {
+            val result = withContext(Dispatchers.IO) { service.connect() }
+            if (result.isFailure) {
+                val e = result.exceptionOrNull()!!
                 invokeLater {
                     updateUIForDisconnected()
+                    val msg = when (e) {
+                        is JedisConnectionException -> message("valkey.browser.error.connection.cannot", e.message ?: "")
+                        else -> message("valkey.browser.error.connection.auth", e.message ?: "")
+                    }
                     Messages.showErrorDialog(
                         this@ValkeyBrowserPanel,
-                        message("valkey.browser.error.connection.cannot", e.message ?: ""),
+                        msg,
                         message("valkey.browser.error.connection.title")
                     )
                 }
-            } catch (e: Exception) {
-                invokeLater {
-                    updateUIForDisconnected()
-                    Messages.showErrorDialog(
-                        this@ValkeyBrowserPanel,
-                        message("valkey.browser.error.connection.auth", e.message ?: ""),
-                        message("valkey.browser.error.connection.title")
-                    )
-                }
+                return@launch
+            }
+            invokeLater {
+                updateUIForConnected()
+                loadKeys()
             }
         }
     }
@@ -774,7 +768,14 @@ class ValkeyBrowserPanel(
         coroutineScope.launch {
             try {
                 // Verify connection before loading value
-                withContext(Dispatchers.IO) { service.ping() }
+                val pingOk = runCatching { withContext(Dispatchers.IO) { service.ping() } }.isSuccess
+                if (!pingOk) {
+                    invokeLater {
+                        valueBorder.title = message("valkey.browser.section.value")
+                        valueArea.text = message("valkey.browser.error.connection.lost")
+                    }
+                    return@launch
+                }
                 val (_, rawValue) = withContext(Dispatchers.IO) {
                     val t = service.getType(selectedKey)
                     t to fetchValueByType(t, selectedKey)
@@ -915,7 +916,18 @@ class ValkeyBrowserPanel(
         coroutineScope.launch {
             try {
                 // Verify connection is alive before scanning
-                withContext(Dispatchers.IO) { service.ping() }
+                val pingOk = runCatching { withContext(Dispatchers.IO) { service.ping() } }.isSuccess
+                if (!pingOk) {
+                    invokeLater {
+                        updateUIForDisconnected()
+                        Messages.showErrorDialog(
+                            this@ValkeyBrowserPanel,
+                            message("valkey.browser.error.connection.lost"),
+                            message("valkey.browser.error.connection.title")
+                        )
+                    }
+                    return@launch
+                }
 
                 val result = withContext(Dispatchers.IO) {
                     val loaded = service.scanKeys(pattern, count).take(count)
@@ -983,7 +995,7 @@ class ValkeyBrowserPanel(
                 val gbc = java.awt.GridBagConstraints().apply {
                     fill = java.awt.GridBagConstraints.HORIZONTAL
                     weightx = 1.0
-                    insets = java.awt.Insets(4, 4, 4, 4)
+                    insets = JBUI.insets(4)
                 }
 
                 // Key name
@@ -1111,6 +1123,17 @@ class ValkeyBrowserPanel(
 
         coroutineScope.launch {
             try {
+                val pingOk = runCatching { withContext(Dispatchers.IO) { service.ping() } }.isSuccess
+                if (!pingOk) {
+                    invokeLater {
+                        Messages.showErrorDialog(
+                            this@ValkeyBrowserPanel,
+                            message("valkey.browser.error.connection.lost"),
+                            message("valkey.browser.error.connection.title")
+                        )
+                    }
+                    return@launch
+                }
                 withContext(Dispatchers.IO) {
                     service.deleteKey(selected.name)
                 }

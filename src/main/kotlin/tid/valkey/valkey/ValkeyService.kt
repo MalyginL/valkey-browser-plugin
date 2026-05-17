@@ -20,7 +20,7 @@ class ValkeyService {
     val isConnected: Boolean
         get() = jedis != null && jedis!!.isConnected
 
-    fun connect() {
+    fun connect(): Result<Unit> = runCatching {
         lock.lock()
         try {
             disconnectInternal()
