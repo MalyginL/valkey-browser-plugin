@@ -15,7 +15,18 @@ class ValkeyService {
 
     private var jedis: Jedis? = null
     private val lock = ReentrantLock()
+    private companion object {
+        const val SOCKET_TIMEOUT_MS = 10000  // 10s read timeout
+    }
+
     var connection: ValkeyConnection = ValkeyConnection()
+
+    /** Called by the panel to receive log messages in the in-panel log area */
+    var logCallback: ((level: String, msg: String) -> Unit)? = null
+
+    private fun logToCallback(level: String, msg: String) {
+        logCallback?.invoke(level, msg)
+    }
 
     val isConnected: Boolean
         get() = jedis != null && jedis!!.isConnected
@@ -25,6 +36,11 @@ class ValkeyService {
         try {
             disconnectInternal()
             val scheme = if (connection.ssl) "rediss" else "redis"
+            val authUser = if (connection.password.isNotBlank()) connection.username else "none"
+            val connectingMsg = "Connecting to $scheme://${connection.host}:${connection.port}/${connection.db} (ssl=${connection.ssl}, user=$authUser, timeout=${SOCKET_TIMEOUT_MS}ms)"
+            thisLogger().info(connectingMsg)
+            logToCallback("INFO", connectingMsg)
+
             val userInfo = if (connection.password.isNotBlank()) {
                 "${connection.username.ifBlank { "default" }}:${connection.password}"
             } else {
@@ -36,17 +52,40 @@ class ValkeyService {
                 connection.host,
                 connection.port,
                 "/${connection.db}",
-                "timeout=${connection.connectTimeout}&socket.timeout=${connection.socketTimeout}",
+                "timeout=${SOCKET_TIMEOUT_MS}",
                 null
             )
+            // Log URI with password masked for security
+            val safeUri = if (userInfo != null) {
+                "${scheme}://***:${"***"}@${connection.host}:${connection.port}/${connection.db}?timeout=${SOCKET_TIMEOUT_MS}"
+            } else {
+                "${scheme}://${connection.host}:${connection.port}/${connection.db}?timeout=${SOCKET_TIMEOUT_MS}"
+            }
+            val uriMsg = "URI created ($safeUri), constructing Jedis client..."
+            thisLogger().info(uriMsg)
+            logToCallback("INFO", uriMsg)
             val client = Jedis(uri)
 
-            client.ping()
+            val pingSentMsg = "Jedis client created, sending PING..."
+            thisLogger().info(pingSentMsg)
+            logToCallback("INFO", pingSentMsg)
+            val pingStart = System.currentTimeMillis()
+            val pingOk = runCatching { client.ping() }.isSuccess
+            val pingMs = System.currentTimeMillis() - pingStart
+            if (!pingOk) {
+                val pingWarn = "PING failed (ACL denied?), accepting connection anyway (ping=${pingMs}ms)"
+                thisLogger().warn(pingWarn)
+                logToCallback("WARN", pingWarn)
+            }
             jedis = client
-            thisLogger().info("Connected to Valkey at ${connection.host}:${connection.port} (db=${connection.db})")
+            val connectedMsg = "Connected to Valkey at ${connection.host}:${connection.port} (db=${connection.db}, ping=${pingMs}ms, pingOk=$pingOk)"
+            thisLogger().info(connectedMsg)
+            logToCallback("INFO", connectedMsg)
         } catch (e: Exception) {
             disconnectInternal()
-            thisLogger().error("Failed to connect to Valkey", e)
+            val errMsg = "Failed to connect to Valkey at ${connection.host}:${connection.port} (${e.javaClass.simpleName}: ${e.message})"
+            thisLogger().error(errMsg, e)
+            logToCallback("ERROR", errMsg)
             throw e
         } finally { lock.unlock() }
     }
@@ -56,12 +95,17 @@ class ValkeyService {
         try { disconnectInternal() } finally { lock.unlock() }
     }
 
-    private fun disconnectInternal() {
+   private fun disconnectInternal() {
         try {
             jedis?.close()
         } catch (e: Exception) {
-            thisLogger().warn("Error closing connection", e)
+            val closeWarn = "Error closing connection"
+            thisLogger().warn(closeWarn, e)
+            logToCallback("WARN", closeWarn)
         }
+        val discMsg = "Disconnected"
+        thisLogger().info(discMsg)
+        logToCallback("INFO", discMsg)
         jedis = null
     }
 
@@ -74,9 +118,10 @@ class ValkeyService {
     }
 
     /**
-     * Returns all keys matching the pattern (uses SCAN for safety).
+     * Returns up to [count] keys matching the pattern (uses SCAN for safety).
+     * Stops scanning as soon as [count] keys are collected.
      * @param pattern Glob pattern (e.g. "*", "user:*")
-     * @param count   Hint for keys per batch (default 100)
+     * @param count   Maximum number of keys to return (default 100)
      */
     fun scanKeys(pattern: String = "*", count: Int = 100): List<String> {
         lock.lock()
@@ -85,14 +130,26 @@ class ValkeyService {
             val keys = mutableListOf<String>()
             val params = ScanParams().count(count).match(pattern)
             var cursor = "0"
+            var batches = 0
+            val scanStart = System.currentTimeMillis()
 
             do {
                 val scanResult = client.scan(cursor, params)
+                val added = scanResult.result.orEmpty().size
                 keys.addAll(scanResult.result.orEmpty())
                 cursor = scanResult.cursor.toString()
-            } while (cursor != "0")
+                batches++
+                val scanMsg = "SCAN batch $batches: cursor=$cursor, got=$added, total=${keys.size}, elapsed=${System.currentTimeMillis() - scanStart}ms"
+                thisLogger().info(scanMsg)
+                logToCallback("INFO", scanMsg)
+            } while (cursor != "0" && keys.size < count)
 
-            return keys.sorted()
+            val sorted = keys.sorted()
+            val totalMs = System.currentTimeMillis() - scanStart
+               val scanComplete = "SCAN complete: pattern=$pattern, returned=${sorted.size}, batches=$batches, total=${totalMs}ms"
+            thisLogger().info(scanComplete)
+            logToCallback("INFO", scanComplete)
+            return sorted
         } finally { lock.unlock() }
     }
 
@@ -196,7 +253,13 @@ class ValkeyService {
      */
     fun getDbSize(): Long {
         lock.lock()
-        try { return checkConnected().dbSize() } finally { lock.unlock() }
+        try {
+            val size = checkConnected().dbSize()
+            val dbSizeMsg = "DBSIZE: $size"
+            thisLogger().info(dbSizeMsg)
+            logToCallback("INFO", dbSizeMsg)
+            return size
+        } finally { lock.unlock() }
     }
 
     /**
@@ -207,12 +270,21 @@ class ValkeyService {
         try {
             val client = checkConnected()
             val infoText = client.info("memory")
-            return infoText
+            val memory = infoText
                 .split("\r\n", "\n")
                 .find { it.startsWith("used_memory_human:") }
                 ?.substringAfter(":")
                 ?.trim()
                 ?: "?"
+            val memMsg = "INFO memory: used_memory_human=$memory"
+            thisLogger().info(memMsg)
+            logToCallback("INFO", memMsg)
+            return memory
+        } catch (e: Exception) {
+            val memWarn = "Failed to get INFO memory (${e.javaClass.simpleName}: ${e.message})"
+            thisLogger().warn(memWarn)
+            logToCallback("WARN", memWarn)
+            throw e
         } finally { lock.unlock() }
     }
 

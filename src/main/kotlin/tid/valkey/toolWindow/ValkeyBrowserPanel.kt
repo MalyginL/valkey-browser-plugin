@@ -2,11 +2,15 @@ package tid.valkey.toolWindow
 
 import com.intellij.openapi.application.invokeLater
 import com.intellij.openapi.components.service
+import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
+import java.text.SimpleDateFormat
+import java.util.Date
 import com.intellij.ui.JBColor
 import com.intellij.util.ui.UIUtil
 import com.intellij.ui.components.JBLabel
+import javax.swing.SwingUtilities
 import javax.swing.UIManager
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBPanel
@@ -131,6 +135,12 @@ class ValkeyBrowserPanel(
     }
 
     private val service: ValkeyService = project.service<ValkeyService>()
+
+    init {
+        service.logCallback = { level, msg ->
+            appendLog(level, msg)
+        }
+    }
     private val settings: ValkeySettings = project.service<ValkeySettings>()
     private val coroutineScope = CoroutineScope(Dispatchers.Default)
 
@@ -202,6 +212,73 @@ class ValkeyBrowserPanel(
             LineBorder(borderLine(), 1),
             JBUI.Borders.empty(4, 8)
         )
+    }
+
+    // In-panel log area
+    private val logLines = StringBuilder()
+    private val logArea = JBTextArea().apply {
+        isEditable = false
+        isFocusable = false
+        lineWrap = false
+        wrapStyleWord = false
+        font = fixedFont()
+        isOpaque = true
+        background = panelBackground()
+        foreground = panelForeground()
+    }
+      private val logPanel = JBPanel<Nothing>(java.awt.BorderLayout()).apply {
+        isOpaque = true
+        background = panelBackground()
+        border = TitledBorder(
+            LineBorder(borderLine(), 1),
+            message("valkey.browser.section.log"),
+            TitledBorder.LEFT,
+            TitledBorder.TOP,
+            smallFont().deriveFont(Font.BOLD),
+            panelForeground()
+        )
+        add(JBScrollPane(logArea).apply {
+            isOpaque = true
+            background = panelBackground()
+            viewport.isOpaque = true
+            viewport.background = panelBackground()
+            border = JBUI.Borders.empty(0, 8, 8, 8)
+            verticalScrollBar.background = panelBackground()
+            verticalScrollBar.isOpaque = true
+            horizontalScrollBar.background = panelBackground()
+            horizontalScrollBar.isOpaque = true
+            val logLineHeight = logArea.getFontMetrics(logArea.font).height
+            preferredSize = Dimension(600, logLineHeight * 3 + 16)
+            minimumSize = Dimension(600, logLineHeight * 3 + 16)
+        }, java.awt.BorderLayout.CENTER)
+        isVisible = true
+    }
+
+    // Log buffer — always visible, appends to StringBuilder then sets full text on EDT
+    private val logTimestamp = SimpleDateFormat("HH:mm:ss")
+    private fun appendLog(level: String, msg: String) {
+        val entry = "[$level] ${logTimestamp.format(Date())} $msg"
+        SwingUtilities.invokeLater {
+            if (logLines.isNotEmpty()) logLines.appendLine()
+            logLines.append(entry)
+            logArea.text = logLines.toString()
+            logArea.caretPosition = 0
+            // Auto-scroll scrollbar to bottom
+            val scrollRect = logArea.modelToView(logArea.document.length)
+            if (scrollRect != null) logArea.scrollRectToVisible(scrollRect)
+        }
+    }
+    private fun logInfo(msg: String) {
+        thisLogger().info(msg)
+        appendLog("INFO", msg)
+    }
+    private fun logWarn(msg: String) {
+        thisLogger().warn(msg)
+        appendLog("WARN", msg)
+    }
+    private fun logError(msg: String, t: Throwable? = null) {
+        thisLogger().error(msg, t)
+        appendLog("ERROR", msg)
     }
 
     // Loading indicator
@@ -506,6 +583,31 @@ class ValkeyBrowserPanel(
                 weighty = 0.5
             }
             add(valuePanel, valueGbc)
+
+            // Log panel (hidden by default, row 4)
+            val logDivider = JBPanel<Nothing>().apply {
+                isOpaque = true
+                background = borderLine()
+                minimumSize = Dimension(1, 2)
+                preferredSize = Dimension(1, 2)
+                maximumSize = Dimension(Integer.MAX_VALUE, 2)
+            }
+            val logDivGbc = java.awt.GridBagConstraints().apply {
+                gridx = 0; gridy = 4
+                fill = java.awt.GridBagConstraints.HORIZONTAL
+                weightx = 1.0
+                insets = JBUI.insets(4, 0)
+            }
+            add(logDivider, logDivGbc)
+
+            val logGbc = java.awt.GridBagConstraints().apply {
+                gridx = 0; gridy = 5
+                fill = java.awt.GridBagConstraints.BOTH
+                weightx = 1.0
+                weighty = 0.0
+                insets = JBUI.insetsTop(4)
+            }
+            add(logPanel, logGbc)
         }
         add(mainStack, java.awt.BorderLayout.CENTER)
 
@@ -717,8 +819,10 @@ class ValkeyBrowserPanel(
 
     private fun handleConnection() {
         if (service.isConnected) {
+            logInfo("Disconnecting...")
             service.disconnect()
             updateUIForDisconnected()
+            logInfo("Disconnected by user")
             return
         }
 
@@ -731,6 +835,7 @@ class ValkeyBrowserPanel(
             password = String(passwordField.password)
         )
         service.connection = connection
+        logInfo("Connecting to ${connection.host}:${connection.port}/${connection.db} (ssl=${connection.ssl})...")
 
         updateUIForConnecting()
 
@@ -738,6 +843,7 @@ class ValkeyBrowserPanel(
             val result = withContext(Dispatchers.IO) { service.connect() }
             if (result.isFailure) {
                 val e = result.exceptionOrNull()!!
+                logError("Connection failed: ${e.javaClass.simpleName}: ${e.message}", e)
                 invokeLater {
                     updateUIForDisconnected()
                     val msg = when (e) {
@@ -753,6 +859,7 @@ class ValkeyBrowserPanel(
                 return@launch
             }
             invokeLater {
+                logInfo("Connected successfully, loading keys...")
                 updateUIForConnected()
                 loadKeys()
             }
@@ -767,15 +874,6 @@ class ValkeyBrowserPanel(
         val selectedKey = selected.name
         coroutineScope.launch {
             try {
-                // Verify connection before loading value
-                val pingOk = runCatching { withContext(Dispatchers.IO) { service.ping() } }.isSuccess
-                if (!pingOk) {
-                    invokeLater {
-                        valueBorder.title = message("valkey.browser.section.value")
-                        valueArea.text = message("valkey.browser.error.connection.lost")
-                    }
-                    return@launch
-                }
                 val (_, rawValue) = withContext(Dispatchers.IO) {
                     val t = service.getType(selectedKey)
                     t to fetchValueByType(t, selectedKey)
@@ -908,6 +1006,7 @@ class ValkeyBrowserPanel(
         }
         val pattern = patternField.text.ifBlank { "*" }
         val count = limitField.text.toIntOrNull() ?: 100
+        logInfo("loadKeys: pattern=$pattern, count=$count")
 
         invokeLater {
             loadingIndicator.isVisible = true
@@ -915,34 +1014,27 @@ class ValkeyBrowserPanel(
         }
         coroutineScope.launch {
             try {
-                // Verify connection is alive before scanning
-                val pingOk = runCatching { withContext(Dispatchers.IO) { service.ping() } }.isSuccess
-                if (!pingOk) {
-                    invokeLater {
-                        updateUIForDisconnected()
-                        Messages.showErrorDialog(
-                            this@ValkeyBrowserPanel,
-                            message("valkey.browser.error.connection.lost"),
-                            message("valkey.browser.error.connection.title")
-                        )
-                    }
-                    return@launch
-                }
-
+                logInfo("loadKeys: starting scan...")
                 val result = withContext(Dispatchers.IO) {
-                    val loaded = service.scanKeys(pattern, count).take(count)
+                    logInfo("loadKeys: calling scanKeys...")
+                    val loaded = service.scanKeys(pattern, count)
+                    logInfo("loadKeys: scanKeys returned ${loaded.size} keys, fetching TTLs...")
                     // Fetch TTL for each key
                     val withTTL = loaded.map { name ->
                         val ttl = runCatching { service.getTTL(name) }.getOrNull() ?: -1L
                         KeyWithTTL(name, ttl)
                     }
+                    logInfo("loadKeys: TTLs done, fetching DBSIZE...")
                     val size = runCatching { service.getDbSize() }.getOrNull() ?: -1L
+                    logInfo("loadKeys: DBSIZE done, fetching memory info...")
                     val mem = runCatching { service.getUsedMemoryHuman() }.getOrNull() ?: "?"
+                    logInfo("loadKeys: all done, dbSize=$size, memory=$mem")
                     withTTL to size to mem
                 }
                 val keys = result.first.first
                 val dbSize = result.first.second
                 val memory = result.second
+                logInfo("loadKeys: updating UI with ${keys.size} keys")
                 invokeLater {
                     loadingIndicator.isVisible = false
                     loadingIndicator.revalidate()
@@ -958,6 +1050,7 @@ class ValkeyBrowserPanel(
                     }
                 }
             } catch (e: Exception) {
+                logError("loadKeys: exception (${e.javaClass.simpleName}: ${e.message})", e)
                 invokeLater {
                     Messages.showErrorDialog(
                         this@ValkeyBrowserPanel,

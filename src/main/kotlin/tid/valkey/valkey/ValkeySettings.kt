@@ -14,9 +14,7 @@ data class SavedConnectionConfig(
     var db: Int = 0,
     var ssl: Boolean = false,
     var username: String = "default",
-    var password: String = "",
-    var connectTimeout: Int = 5000,
-    var socketTimeout: Int = 5000
+    var password: String = ""
 ) {
     /**
      * Convert to a ValkeyConnection for use with ValkeyService.
@@ -28,9 +26,7 @@ data class SavedConnectionConfig(
             db = db,
             ssl = ssl,
             username = username,
-            password = password,
-            connectTimeout = connectTimeout,
-            socketTimeout = socketTimeout
+            password = password
         )
     }
 
@@ -46,9 +42,7 @@ data class SavedConnectionConfig(
                 db = connection.db,
                 ssl = connection.ssl,
                 username = connection.username,
-                password = connection.password,
-                connectTimeout = connection.connectTimeout,
-                socketTimeout = connection.socketTimeout
+                password = connection.password
             )
         }
     }
