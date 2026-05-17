@@ -94,7 +94,7 @@ class ValkeyBrowserPanel(
 
     companion object {
         private val bundle = ResourceBundle.getBundle("messages.ValkeyBundle")
-        private fun message(key: String, vararg args: Any): String {
+        internal fun message(key: String, vararg args: Any): String {
             val template = bundle.getString(key)
             return if (args.isEmpty()) template else java.text.MessageFormat.format(template, *args)
         }
@@ -735,6 +735,7 @@ class ValkeyBrowserPanel(
 
     /**
      * Populate form fields from a saved connection config.
+     * The password is loaded from the OS keychain via PasswordSafe (off EDT).
      */
     private fun populateFormFromConfig(config: SavedConnectionConfig) {
         hostField.text = config.host
@@ -742,7 +743,19 @@ class ValkeyBrowserPanel(
         dbField.selectedIndex = config.db.coerceIn(0, 15)
         sslButton.isSelected = config.ssl
         usernameField.text = config.username
-        passwordField.text = config.password
+        passwordField.text = ""
+        if (config.name != "new connection") {
+            settings.loadPassword(config.name) { storedPassword ->
+                invokeLater {
+                    if (storedPassword != null) {
+                        passwordField.echoChar = '*'
+                        passwordField.text = storedPassword
+                    } else {
+                        passwordField.text = ""
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -755,29 +768,33 @@ class ValkeyBrowserPanel(
 
     /**
      * Save the current form values as a named connection.
+     * If "Remember password" is checked, the password is saved to the OS keychain.
      */
     private fun handleSaveConnection() {
         val defaultName = "${hostField.text}:${portField.text}"
-        val name = Messages.showInputDialog(
-            project,
-            message("valkey.browser.dialog.save.connection.prompt"),
-            message("valkey.browser.dialog.save.connection.title"),
-            null,
-            defaultName,
-            null,
-            null
-        ) ?: return
+        val result = showSaveConnectionDialog(project, defaultName) ?: return
 
+        val name = result.first
         val config = buildSavedConfigFromForm()
         config.name = name
 
         settings.saveCurrent(config)
         settings.selectConnection(name)
+
+        // Save password securely if "Remember password" is checked
+        val password = String(passwordField.password)
+        if (result.second && password.isNotEmpty()) {
+            settings.savePassword(name, password)
+        } else {
+            settings.savePassword(name, "")  // delete any previously stored password
+        }
+
         loadSavedConnections()
     }
 
     /**
      * Delete the currently selected saved connection.
+     * Also removes the stored password from the OS keychain.
      */
     private fun handleDeleteConnection() {
         val selectedName = connectionList.selectedValue ?: return
@@ -797,6 +814,7 @@ class ValkeyBrowserPanel(
         ) == Messages.YES
         if (!ok) return
 
+        settings.removePassword(selectedName)
         settings.removeConnection(selectedName)
         loadSavedConnections()
         populateFormFromSettings()
@@ -804,6 +822,7 @@ class ValkeyBrowserPanel(
 
     /**
      * Build a SavedConnectionConfig from current form values.
+     * Note: password is NOT included here — it is saved separately to the OS keychain.
      */
     private fun buildSavedConfigFromForm(): SavedConnectionConfig {
         return SavedConnectionConfig(
@@ -812,8 +831,7 @@ class ValkeyBrowserPanel(
             port = portField.text.toIntOrNull() ?: 6379,
             db = dbField.selectedIndex,
             ssl = sslButton.isSelected,
-            username = usernameField.text,
-            password = String(passwordField.password)
+            username = usernameField.text
         )
     }
 
