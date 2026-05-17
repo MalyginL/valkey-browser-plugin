@@ -119,19 +119,28 @@ class ValkeyService {
 
     /**
      * Returns up to [count] keys matching the pattern (uses SCAN for safety).
-     * Stops scanning as soon as [count] keys are collected.
+     * Batch size is adapted to DB size: min(max(sqrt(total_keys) * 10, 100), 10000).
+     * Stops scanning once [count] keys are collected or [maxBatches] batches are exhausted.
      * @param pattern Glob pattern (e.g. "*", "user:*")
-     * @param count   Maximum number of keys to return (default 100)
+     * @param count   Maximum number of keys to return (default 20)
      */
-    fun scanKeys(pattern: String = "*", count: Int = 100): List<String> {
+    fun scanKeys(pattern: String = "*", count: Int = 20): List<String> {
         lock.lock()
         try {
             val client = checkConnected()
+            val totalKeys = client.dbSize()
+            val batchSize = calculateOptimalBatchCount(totalKeys)
+            val maxBatches = 50
+
             val keys = mutableListOf<String>()
-            val params = ScanParams().count(count).match(pattern)
+            val params = ScanParams().count(batchSize).match(pattern)
             var cursor = "0"
             var batches = 0
             val scanStart = System.currentTimeMillis()
+
+            val adaptMsg = "SCAN start: pattern=$pattern, target=$count, dbSize=$totalKeys, batchSize=$batchSize, maxBatches=$maxBatches"
+            thisLogger().info(adaptMsg)
+            logToCallback("INFO", adaptMsg)
 
             do {
                 val scanResult = client.scan(cursor, params)
@@ -142,15 +151,25 @@ class ValkeyService {
                 val scanMsg = "SCAN batch $batches: cursor=$cursor, got=$added, total=${keys.size}, elapsed=${System.currentTimeMillis() - scanStart}ms"
                 thisLogger().info(scanMsg)
                 logToCallback("INFO", scanMsg)
-            } while (cursor != "0" && keys.size < count)
+            } while (cursor != "0" && keys.size < count && batches < maxBatches)
 
             val sorted = keys.sorted()
             val totalMs = System.currentTimeMillis() - scanStart
-               val scanComplete = "SCAN complete: pattern=$pattern, returned=${sorted.size}, batches=$batches, total=${totalMs}ms"
+            val scanComplete = "SCAN complete: pattern=$pattern, returned=${sorted.size}, batches=$batches, total=${totalMs}ms"
             thisLogger().info(scanComplete)
             logToCallback("INFO", scanComplete)
             return sorted
         } finally { lock.unlock() }
+    }
+
+    /**
+     * Calculate optimal SCAN batch count based on DB size.
+     * Formula: min(max(sqrt(totalKeys) * 10, 100), 10000)
+     * Small DBs (<1k keys) → 100, medium DBs → scaled, huge DBs (>100M) → 10000.
+     */
+    private fun calculateOptimalBatchCount(totalKeys: Long): Int {
+        val optimal = (Math.sqrt(totalKeys.toDouble()) * 10).toInt()
+        return optimal.coerceIn(100, 10000)
     }
 
     /**

@@ -121,16 +121,33 @@ class ValkeyBrowserPanel(
 
         private fun toolbarHoverBackground() = blend(UIUtil.getListSelectionBackground(), UIUtil.getPanelBackground(), 0.08f)
 
-        /** Style a text field to look like a placeholder hint (italic + muted). */
-        private fun applyPlaceholderStyle(field: javax.swing.text.JTextComponent) {
-            field.font = field.font.deriveFont(Font.ITALIC)
-            field.foreground = mutedForeground()
-        }
+        /**
+         * Set up a real placeholder: show hint text, clear on focus, restore on focus lost if empty.
+         */
+        internal fun setupPlaceholder(field: javax.swing.text.JTextComponent, hint: String) {
+            val normalFont = field.font
+            val normalColor = panelForeground()
 
-        /** Clear placeholder styling when the field gains focus. */
-        private fun clearPlaceholderStyle(field: javax.swing.text.JTextComponent) {
-            field.font = field.font.deriveFont(Font.PLAIN)
-            field.foreground = panelForeground()
+            fun showHint() {
+                if (field.text.isEmpty()) {
+                    field.text = hint
+                    field.font = normalFont.deriveFont(Font.ITALIC)
+                    field.foreground = mutedForeground()
+                }
+            }
+            fun clearHint() {
+                if (field.text == hint) {
+                    field.text = ""
+                    field.font = normalFont.deriveFont(Font.PLAIN)
+                    field.foreground = normalColor
+                }
+            }
+
+            showHint()
+            field.addFocusListener(object : java.awt.event.FocusAdapter() {
+                override fun focusGained(e: java.awt.event.FocusEvent?) = clearHint()
+                override fun focusLost(e: java.awt.event.FocusEvent?) = showHint()
+            })
         }
     }
 
@@ -198,7 +215,7 @@ class ValkeyBrowserPanel(
 
     // Pattern filter — server-side glob matching
     private val patternField = JBTextField()
-    private val limitField = JBTextField("100")
+    private val limitField = JBTextField()
     private var cachedDbSize: Long = -1L
     private var cachedMemory: String = "?"
 
@@ -290,14 +307,26 @@ class ValkeyBrowserPanel(
         preferredSize = Dimension(preferredSize.width, 16)
     }
 
+    /** Small "?" help icon with a tooltip. */
+    private fun createHelpIcon(tooltip: String): JButton = JButton("?").apply {
+        font = smallFont().deriveFont(Font.BOLD)
+        foreground = mutedForeground()
+        isBorderPainted = false
+        isContentAreaFilled = false
+        cursor = java.awt.Cursor(java.awt.Cursor.HAND_CURSOR)
+        preferredSize = Dimension(16, preferredSize.height)
+        toolTipText = tooltip
+    }
+
     // Toolbar buttons (compact, no border, icon-style with hover)
-    private fun createToolButton(text: String, icon: String = "", action: () -> Unit): JButton {
+    private fun createToolButton(text: String, icon: String = "", toolTip: String = "", action: () -> Unit): JButton {
         return JButton("$icon $text").apply {
             isBorderPainted = false
             isContentAreaFilled = false
             cursor = java.awt.Cursor(java.awt.Cursor.HAND_CURSOR)
             font = smallFont()
             margin = JBUI.insets(4, 8)
+            if (toolTip.isNotBlank()) this.toolTipText = toolTip
             addActionListener { action() }
 
             // Theme-aware hover effect
@@ -430,20 +459,17 @@ class ValkeyBrowserPanel(
                     }
                     add(patternRow, java.awt.BorderLayout.NORTH)
 
-                    // Bottom: limit + Scan + Delete + loading
+                    // Bottom: limit + ? + textbox + Scan + ? + Delete + loading
                     val btnRow = JBPanel<Nothing>(java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 4)).apply {
                         isOpaque = false
                         add(JBLabel(message("valkey.browser.label.limit")).apply {
                             font = smallFont().deriveFont(Font.ITALIC)
                             foreground = mutedForeground()
                         })
-                        add(limitField.apply {
-                            columns = 5
-                            toolTipText = message("valkey.browser.label.limit.tooltip")
-                            font = smallFont().deriveFont(Font.ITALIC)
-                            foreground = mutedForeground()
-                        })
+                        add(createHelpIcon(message("valkey.browser.label.limit.tooltip")))
+                        add(limitField.apply { columns = 5 })
                         add(keys2RefreshBtn.apply { border = LineBorder(borderLine(), 1) })
+                        add(createHelpIcon(message("valkey.browser.action.scan.tooltip")))
                         add(Box.createHorizontalGlue())
                         add(loadingIndicator)
                     }
@@ -617,6 +643,10 @@ class ValkeyBrowserPanel(
         // Register connection list selection listener once
         connectionList.addListSelectionListener(connectionSelectionListener)
 
+        // Set up placeholders for filter fields
+        Companion.setupPlaceholder(patternField, "*")
+        Companion.setupPlaceholder(limitField, "20")
+
         // Populate form from current saved connection
         populateFormFromSettings()
     }
@@ -662,28 +692,12 @@ class ValkeyBrowserPanel(
         // Host + Port + DB
         row {
             label(message("valkey.browser.label.host"))
-            hostField = textField().component
-            hostField.text = "localhost"
-            hostField.columns = 8
-            applyPlaceholderStyle(hostField)
-            hostField.addFocusListener(object : java.awt.event.FocusAdapter() {
-                override fun focusGained(e: java.awt.event.FocusEvent?) = clearPlaceholderStyle(hostField)
-                override fun focusLost(e: java.awt.event.FocusEvent?) {
-                    if (hostField.text.isEmpty()) applyPlaceholderStyle(hostField)
-                }
-            })
+            hostField = textField().component.apply { columns = 8 }
+            setupPlaceholder(hostField, "localhost")
 
             label(message("valkey.browser.label.port"))
-            portField = textField().component
-            portField.text = "6379"
-            portField.columns = 5
-            applyPlaceholderStyle(portField)
-            portField.addFocusListener(object : java.awt.event.FocusAdapter() {
-                override fun focusGained(e: java.awt.event.FocusEvent?) = clearPlaceholderStyle(portField)
-                override fun focusLost(e: java.awt.event.FocusEvent?) {
-                    if (portField.text.isEmpty()) applyPlaceholderStyle(portField)
-                }
-            })
+            portField = textField().component.apply { columns = 5 }
+            setupPlaceholder(portField, "6379")
 
             label(message("valkey.browser.label.db"))
             cell(dbField).apply { component.preferredSize = Dimension(36, component.preferredSize.height) }
@@ -692,16 +706,8 @@ class ValkeyBrowserPanel(
         // Username + Password
         row {
             label(message("valkey.browser.label.username"))
-            usernameField = textField().component
-            usernameField.text = "default"
-            usernameField.columns = 8
-            applyPlaceholderStyle(usernameField)
-            usernameField.addFocusListener(object : java.awt.event.FocusAdapter() {
-                override fun focusGained(e: java.awt.event.FocusEvent?) = clearPlaceholderStyle(usernameField)
-                override fun focusLost(e: java.awt.event.FocusEvent?) {
-                    if (usernameField.text.isEmpty()) applyPlaceholderStyle(usernameField)
-                }
-            })
+            usernameField = textField().component.apply { columns = 8 }
+            setupPlaceholder(usernameField, "default")
 
             label(message("valkey.browser.label.password"))
             passwordField = passwordField().component as javax.swing.JPasswordField
@@ -738,11 +744,27 @@ class ValkeyBrowserPanel(
      * The password is loaded from the OS keychain via PasswordSafe (off EDT).
      */
     private fun populateFormFromConfig(config: SavedConnectionConfig) {
+        fun applyFieldStyle(field: JBTextField, value: String, hint: String) {
+            if (value == hint) {
+                field.font = field.font.deriveFont(Font.ITALIC)
+                field.foreground = mutedForeground()
+            } else {
+                field.font = field.font.deriveFont(Font.PLAIN)
+                field.foreground = panelForeground()
+            }
+        }
+
         hostField.text = config.host
+        applyFieldStyle(hostField, config.host, "localhost")
+
         portField.text = config.port.toString()
+        applyFieldStyle(portField, config.port.toString(), "6379")
+
         dbField.selectedIndex = config.db.coerceIn(0, 15)
         sslButton.isSelected = config.ssl
+
         usernameField.text = config.username
+        applyFieldStyle(usernameField, config.username, "default")
         passwordField.text = ""
         if (config.name != "new connection") {
             settings.loadPassword(config.name) { storedPassword ->
@@ -1023,7 +1045,7 @@ class ValkeyBrowserPanel(
             return
         }
         val pattern = patternField.text.ifBlank { "*" }
-        val count = limitField.text.toIntOrNull() ?: 100
+        val count = limitField.text.toIntOrNull() ?: 20
         logInfo("loadKeys: pattern=$pattern, count=$count")
 
         invokeLater {
@@ -1128,7 +1150,12 @@ class ValkeyBrowserPanel(
 
                 // TTL
                 gbc.gridy = 4
-                val ttlSecondsField = JBTextField("0").apply { columns = 6; isEnabled = false; toolTipText = message("valkey.browser.dialog.create.key.ttl.tooltip") }
+                val ttlSecondsField = JBTextField().apply {
+                    columns = 6
+                    isEnabled = false
+                    toolTipText = message("valkey.browser.dialog.create.key.ttl.tooltip")
+                    Companion.setupPlaceholder(this, "3600")
+                }
                 val ttlCheckbox = JBCheckBox(message("valkey.browser.dialog.create.key.label.ttl")).apply {
                     isSelected = false
                     addActionListener {
