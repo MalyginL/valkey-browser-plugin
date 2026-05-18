@@ -5,6 +5,7 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
+import com.intellij.openapi.util.Disposer
 import java.text.SimpleDateFormat
 import java.util.Date
 import com.intellij.ui.JBColor
@@ -26,6 +27,8 @@ import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.JBUI.insetsBottom
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import tid.valkey.valkey.SavedConnectionConfig
@@ -157,9 +160,10 @@ class ValkeyBrowserPanel(
         service.logCallback = { level, msg ->
             appendLog(level, msg)
         }
+        Disposer.register(project) { coroutineScope.cancel() }
     }
     private val settings: ValkeySettings = project.service<ValkeySettings>()
-    private val coroutineScope = CoroutineScope(Dispatchers.Default)
+    private val coroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     // Connection management
     private val connectionListModel = DefaultListModel<String>()
@@ -271,16 +275,21 @@ class ValkeyBrowserPanel(
         isVisible = true
     }
 
-    // Log buffer — always visible, appends to StringBuilder then sets full text on EDT
     private val logTimestamp = SimpleDateFormat("HH:mm:ss")
+    private val maxLogLines = 500
     private fun appendLog(level: String, msg: String) {
         val entry = "[$level] ${logTimestamp.format(Date())} $msg"
         SwingUtilities.invokeLater {
             if (logLines.isNotEmpty()) logLines.appendLine()
             logLines.append(entry)
+            // Rolling cap: keep last maxLogLines lines
+            val lines = logLines.split("\n")
+            if (lines.size > maxLogLines) {
+                logLines.clear()
+                logLines.append(lines.takeLast(maxLogLines).joinToString("\n"))
+            }
             logArea.text = logLines.toString()
             logArea.caretPosition = 0
-            // Auto-scroll scrollbar to bottom
             val scrollRect = logArea.modelToView(logArea.document.length)
             if (scrollRect != null) logArea.scrollRectToVisible(scrollRect)
         }
@@ -766,16 +775,14 @@ class ValkeyBrowserPanel(
         usernameField.text = config.username
         applyFieldStyle(usernameField, config.username, "default")
         passwordField.text = ""
-        if (config.name != "new connection") {
-            settings.loadPassword(config.name) { storedPassword ->
-                invokeLater {
-                    if (storedPassword != null) {
-                        passwordField.echoChar = '*'
-                        passwordField.text = storedPassword
-                    } else {
-                        passwordField.text = ""
-                    }
-                }
+        val loadingForName = config.name
+        settings.loadPassword(config.name) { storedPassword ->
+            invokeLater {
+                // Discard if the user switched to a different connection while loading
+                val currentName = settings.savedConnections.getOrNull(connectionList.selectedIndex)?.name
+                if (currentName != loadingForName) return@invokeLater
+                passwordField.echoChar = '*'
+                passwordField.text = storedPassword ?: ""
             }
         }
     }
@@ -803,15 +810,18 @@ class ValkeyBrowserPanel(
         settings.saveCurrent(config)
         settings.selectConnection(name)
 
-        // Save password securely if "Remember password" is checked
         val password = String(passwordField.password)
         if (result.second && password.isNotEmpty()) {
             settings.savePassword(name, password)
         } else {
-            settings.savePassword(name, "")  // delete any previously stored password
+            settings.savePassword(name, "")
         }
 
+        // Detach listener so programmatic index change doesn't trigger a keychain read
+        // that races the savePassword write above.
+        connectionList.removeListSelectionListener(connectionSelectionListener)
         loadSavedConnections()
+        connectionList.addListSelectionListener(connectionSelectionListener)
     }
 
     /**
@@ -838,7 +848,9 @@ class ValkeyBrowserPanel(
 
         settings.removePassword(selectedName)
         settings.removeConnection(selectedName)
+        connectionList.removeListSelectionListener(connectionSelectionListener)
         loadSavedConnections()
+        connectionList.addListSelectionListener(connectionSelectionListener)
         populateFormFromSettings()
     }
 
@@ -914,12 +926,12 @@ class ValkeyBrowserPanel(
         val selectedKey = selected.name
         coroutineScope.launch {
             try {
-                val (_, rawValue) = withContext(Dispatchers.IO) {
+                val (type, rawValue) = withContext(Dispatchers.IO) {
                     val t = service.getType(selectedKey)
                     t to fetchValueByType(t, selectedKey)
                 }
                 invokeLater {
-                    valueBorder.title = message("valkey.browser.section.value")
+                    valueBorder.title = "${message("valkey.browser.section.value")} [$type]"
                     valueArea.text = rawValue
                 }
             } catch (e: Exception) {
@@ -1049,6 +1061,7 @@ class ValkeyBrowserPanel(
         logInfo("loadKeys: pattern=$pattern, count=$count")
 
         invokeLater {
+            keys2RefreshBtn.isEnabled = false
             loadingIndicator.isVisible = true
             loadingIndicator.revalidate()
         }
@@ -1059,7 +1072,6 @@ class ValkeyBrowserPanel(
                     logInfo("loadKeys: calling scanKeys...")
                     val loaded = service.scanKeys(pattern, count)
                     logInfo("loadKeys: scanKeys returned ${loaded.size} keys, fetching TTLs...")
-                    // Fetch TTL for each key
                     val withTTL = loaded.map { name ->
                         val ttl = runCatching { service.getTTL(name) }.getOrNull() ?: -1L
                         KeyWithTTL(name, ttl)
@@ -1076,6 +1088,7 @@ class ValkeyBrowserPanel(
                 val memory = result.second
                 logInfo("loadKeys: updating UI with ${keys.size} keys")
                 invokeLater {
+                    keys2RefreshBtn.isEnabled = true
                     loadingIndicator.isVisible = false
                     loadingIndicator.revalidate()
                     keyListModel.clear()
@@ -1092,6 +1105,8 @@ class ValkeyBrowserPanel(
             } catch (e: Exception) {
                 logError("loadKeys: exception (${e.javaClass.simpleName}: ${e.message})", e)
                 invokeLater {
+                    keys2RefreshBtn.isEnabled = true
+                    loadingIndicator.isVisible = false
                     Messages.showErrorDialog(
                         this@ValkeyBrowserPanel,
                         message("valkey.browser.error.load.keys", e.message ?: e.javaClass.simpleName),
@@ -1197,33 +1212,30 @@ class ValkeyBrowserPanel(
                                         return
                                     }
                                 } else null
-                                try {
-                                    invokeLater {
-                                        loadingIndicator.isVisible = true
-                                        loadingIndicator.revalidate()
-                                    }
-                                    coroutineScope.launch {
-                                        try {
-                                            withContext(Dispatchers.IO) { service.setStringWithTTL(key, value, ttlSeconds) }
-                                            invokeLater {
-                                                loadingIndicator.isVisible = false
-                                                Messages.showInfoMessage(dialogRef, message("valkey.browser.dialog.create.key.success", key), "Success")
-                                                loadKeys()
-                                            }
-                                    } catch (e: Exception) {
-                                                invokeLater {
-                                                    loadingIndicator.isVisible = false
-                                                    Messages.showErrorDialog(
-                                                        dialogRef,
-                                                        message("valkey.browser.dialog.create.key.error", e.message ?: e.javaClass.simpleName),
-                                                        message("valkey.browser.error.title")
-                                                    )
-                                                }
-                                            }
+                                invokeLater {
+                                    loadingIndicator.isVisible = true
+                                    loadingIndicator.revalidate()
+                                }
+                                coroutineScope.launch {
+                                    try {
+                                        withContext(Dispatchers.IO) { service.setStringWithTTL(key, value, ttlSeconds) }
+                                        invokeLater {
+                                            loadingIndicator.isVisible = false
+                                            dialogRef.dispose()
+                                            Messages.showInfoMessage(this@ValkeyBrowserPanel, message("valkey.browser.dialog.create.key.success", key), "Success")
+                                            loadKeys()
                                         }
-                                    } finally {
-                                        dispose()
+                                    } catch (e: Exception) {
+                                        invokeLater {
+                                            loadingIndicator.isVisible = false
+                                            Messages.showErrorDialog(
+                                                dialogRef,
+                                                message("valkey.browser.dialog.create.key.error", e.message ?: e.javaClass.simpleName),
+                                                message("valkey.browser.error.title")
+                                            )
+                                        }
                                     }
+                                }
                             }
                         })
                 }
@@ -1248,7 +1260,7 @@ class ValkeyBrowserPanel(
      */
     private fun handleDeleteKey() {
         val selected = keyList.selectedValue ?: run {
-            Messages.showInputDialog(this, message("valkey.browser.dialog.delete.key.no.selection"), message("valkey.browser.error.title"), Messages.getWarningIcon())
+            Messages.showWarningDialog(this, message("valkey.browser.dialog.delete.key.no.selection"), message("valkey.browser.error.title"))
             return
         }
         val ok = Messages.showYesNoDialog(

@@ -153,7 +153,7 @@ class ValkeyService {
                 logToCallback("INFO", scanMsg)
             } while (cursor != "0" && keys.size < count && batches < maxBatches)
 
-            val sorted = keys.sorted()
+            val sorted = keys.sorted().take(count)
             val totalMs = System.currentTimeMillis() - scanStart
             val scanComplete = "SCAN complete: pattern=$pattern, returned=${sorted.size}, batches=$batches, total=${totalMs}ms"
             thisLogger().info(scanComplete)
@@ -205,36 +205,44 @@ class ValkeyService {
     }
 
     /**
-     * Gets all elements of a list (LRANGE key 0 -1).
+     * Gets up to 100 elements of a list (LRANGE key 0 99).
      */
     fun getList(key: String): List<String> {
         lock.lock()
-        try { return checkConnected().lrange(key, 0, -1) } finally { lock.unlock() }
+        try { return checkConnected().lrange(key, 0, 99) } finally { lock.unlock() }
     }
 
     /**
-     * Gets all field-value pairs of a hash (HGETALL key).
+     * Gets up to 100 field-value pairs of a hash (HSCAN with count 100).
      */
     fun getHash(key: String): Map<String, String> {
         lock.lock()
-        try { return checkConnected().hgetAll(key) } finally { lock.unlock() }
+        try {
+            val params = ScanParams().count(100)
+            val result = checkConnected().hscan(key, "0", params)
+            return result.result.associate { it.key to it.value }
+        } finally { lock.unlock() }
     }
 
     /**
-     * Gets all members of a set (SMEMBERS key).
+     * Gets up to 100 members of a set (SSCAN with count 100).
      */
     fun getSet(key: String): Set<String> {
         lock.lock()
-        try { return checkConnected().smembers(key) } finally { lock.unlock() }
+        try {
+            val params = ScanParams().count(100)
+            val result = checkConnected().sscan(key, "0", params)
+            return result.result.toSet()
+        } finally { lock.unlock() }
     }
 
     /**
-     * Gets all members and scores of a sorted set (ZRANGE key 0 -1 WITHSCORES).
+     * Gets up to 100 members and scores of a sorted set (ZRANGE key 0 99 WITHSCORES).
      */
     fun getZSet(key: String): List<Pair<String, Double>> {
         lock.lock()
         try {
-            val scored = checkConnected().zrangeWithScores(key, 0, -1)
+            val scored = checkConnected().zrangeWithScores(key, 0, 99)
             return scored.map { it.element to it.score }
         } finally { lock.unlock() }
     }
